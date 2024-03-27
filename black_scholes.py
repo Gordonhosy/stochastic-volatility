@@ -11,7 +11,7 @@ class implied_vol_surface:
             1. Different methods to calculate implied volatility
             2. Plotting functions
         '''
-        self.data = data
+        self.data = snapshot
         self.imp_vol = None
         
     def normal(x):
@@ -26,7 +26,7 @@ class implied_vol_surface:
         '''
         d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
-        return = S * np.exp(-q * T) * self.normal(d1) - K * np.exp(-r * T) * self.normal(d2)
+        return S * np.exp(-q * T) * self.normal(d1) - K * np.exp(-r * T) * self.normal(d2)
     
     def bs_put(self, S, K, r, q, T, sigma):
         '''
@@ -34,7 +34,7 @@ class implied_vol_surface:
         '''
         d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
-        return = K * np.exp(-r * T) * self.normal(-d2) - S * np.exp(-q * T) * self.normal(-d1)
+        return K * np.exp(-r * T) * self.normal(-d2) - S * np.exp(-q * T) * self.normal(-d1)
     
     
     def newton_raphson(self):
@@ -52,26 +52,23 @@ class implied_vol_surface:
             for T in self.data.futures.days_to_exp:
                 
                 # use exact match if exist
-                if T in self.data.local_rates.days_to_exp:
-                    r_bid = self.data.local_rates.bids[self.data.local_rates.days_to_exp.index(T)]
-                    r_ask = self.data.local_rates.asks[self.data.local_rates.days_to_exp.index(T)]
+                if T in self.data.fx_rates.days_to_exp:
+                    r_bid = self.data.fx_rates.bids[self.data.fx_rates.days_to_exp.index(T)]
+                    r_ask = self.data.fx_rates.asks[self.data.fx_rates.days_to_exp.index(T)]
                 
                 # linearly interplote between two rates
-                elif:
-                    for idx, days in enumerate(self.data.local_rates.days_to_exp):
+                else:
+                    for idx, days in enumerate(self.data.fx_rates.days_to_exp):
                         if T > days:
-                            continue
+                            pass
                         else:
                             break
-                        r_bid = ((self.data.local_rates.bids[idx] - self.data.local_rates.bids[idx - 1]) / \
-                        (self.data.local_rates.days_to_exp[idx] - self.data.local_rates.days_to_exp[idx - 1])) \
-                        * (T - self.data.local_rates.days_to_exp[idx - 1]) + self.data.local_rates.bids[idx - 1]
-                        r_ask = ((self.data.local_rates.asks[idx] - self.data.local_rates.asks[idx - 1]) / \
-                        (self.data.local_rates.days_to_exp[idx] - self.data.local_rates.days_to_exp[idx - 1])) \
-                        * (T - self.data.local_rates.days_to_exp[idx - 1]) + self.data.local_rates.asks[idx - 1]
-     
-                else:
-                     print("ERROR - Rates not covering futures maturity)
+                    r_bid = ((self.data.fx_rates.bids[idx] - self.data.fx_rates.bids[idx - 1]) / \
+                    (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
+                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.bids[idx - 1]
+                    r_ask = ((self.data.fx_rates.asks[idx] - self.data.fx_rates.asks[idx - 1]) / \
+                    (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
+                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.asks[idx - 1]
                 
                 r_bids.append(r_bid)
                 r_asks.append(r_ask)
@@ -87,10 +84,10 @@ class implied_vol_surface:
             q_asks = []
             
             for idx, r_bid in enumerate(r_bids): 
-                q_bids.append(r_bid - (1 / T)*np.log(self.data.futures.bids[idx] / self.data.spot.mid)
+                q_bids.append(r_bid - (1 / T)*np.log(self.data.futures.bids[idx] / self.data.spot.mid))
             
             for idx, r_ask in enumerate(r_asks):
-                q_asks.append(r_ask - (1 / T)*np.log(self.data.futures.asks[idx] / self.data.spot.mid)
+                q_asks.append(r_ask - (1 / T)*np.log(self.data.futures.asks[idx] / self.data.spot.mid))
             
             return q_bids, q_asks
                               
@@ -108,8 +105,8 @@ class implied_vol_surface:
             
         
         # Step one: find the implied q
-        r_bids, r_asks = interpolate_r(data)
-        imp_q_bids, imp_q_asks = calc_implied_q(data, r_bids, r_asks)
+        r_bids, r_asks = interpolate_r(self.data)
+        imp_q_bids, imp_q_asks = calc_implied_q(self.data, r_bids, r_asks)
         
         # Step two: Use Newton-Raphson to find the implied vol
         imp_vol_call_bids = []
