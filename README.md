@@ -1,2 +1,2 @@
 # stochastic-volatility
-Calibrating Rough and Stochastic Volatility Models to Asia Index Options
+This is a working MSc thesis for calibrating stochastic volatility models to Asia index options.
