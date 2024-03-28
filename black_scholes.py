@@ -12,9 +12,14 @@ class implied_vol_surface:
             2. Plotting functions
         '''
         self.data = snapshot
-        self.imp_vol = None
+        self.imp_vol_call_bids = []
+        self.imp_vol_call_asks = []
+        self.imp_vol_put_bids = []
+        self.imp_vol_put_asks = []
+        self.days_to_exp = []
+        self.strikes = []
         
-    def normal(x):
+    def normal(self, x):
         '''
         Helper function to return the normal cdf
         '''
@@ -37,14 +42,13 @@ class implied_vol_surface:
         return K * np.exp(-r * T) * self.normal(-d2) - S * np.exp(-q * T) * self.normal(-d1)
     
     
-    def newton_raphson(self):
+    def root_finding(self, method):
         '''
-        This function uses Newton-Raphson method to get the implied vol given all other parameters
+        This function uses root-finding methods to get the implied vol given all other parameters
         This assumes the options have the same expiry with futures
         The function is seperated into two steps:
             1. Calculate the implied dividend yield + repo rate (the implied q) from future contracts for each expiry
-            2. 
-        
+            2. Use a root-finding method to find the implied volatility that minimises squared error between market price and BS option
         '''
         def interpolate_r(data):
             r_bids = []
@@ -53,8 +57,8 @@ class implied_vol_surface:
                 
                 # use exact match if exist
                 if T in self.data.fx_rates.days_to_exp:
-                    r_bid = self.data.fx_rates.bids[self.data.fx_rates.days_to_exp.index(T)]
-                    r_ask = self.data.fx_rates.asks[self.data.fx_rates.days_to_exp.index(T)]
+                    r_bid = self.data.fx_rates.implied_yield_bids[self.data.fx_rates.days_to_exp.index(T)]
+                    r_ask = self.data.fx_rates.implied_yield_asks[self.data.fx_rates.days_to_exp.index(T)]
                 
                 # linearly interplote between two rates
                 else:
@@ -63,16 +67,16 @@ class implied_vol_surface:
                             pass
                         else:
                             break
-                    r_bid = ((self.data.fx_rates.bids[idx] - self.data.fx_rates.bids[idx - 1]) / \
+                    r_bid = ((self.data.fx_rates.implied_yield_bids[idx] - self.data.fx_rates.implied_yield_bids[idx - 1]) / \
                     (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
-                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.bids[idx - 1]
-                    r_ask = ((self.data.fx_rates.asks[idx] - self.data.fx_rates.asks[idx - 1]) / \
+                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.implied_yield_bids[idx - 1]
+                    r_ask = ((self.data.fx_rates.implied_yield_asks[idx] - self.data.fx_rates.implied_yield_asks[idx - 1]) / \
                     (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
-                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.asks[idx - 1]
+                    * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.implied_yield_asks[idx - 1]
                 
-                r_bids.append(r_bid)
-                r_asks.append(r_ask)
-            
+                r_bids.append(r_bid/100)
+                r_asks.append(r_ask/100)
+
             return r_bids, r_asks
         
         
@@ -83,24 +87,36 @@ class implied_vol_surface:
             q_bids = []
             q_asks = []
             
-            for idx, r_bid in enumerate(r_bids): 
-                q_bids.append(r_bid - (1 / T)*np.log(self.data.futures.bids[idx] / self.data.spot.mid))
+            for idx, r_ask in enumerate(r_bids): 
+                q_bids.append(r_ask - (1 / self.data.futures.days_to_exp[idx] * 360) * np.log(self.data.futures.asks[idx] / self.data.spot.mid))
             
-            for idx, r_ask in enumerate(r_asks):
-                q_asks.append(r_ask - (1 / T)*np.log(self.data.futures.asks[idx] / self.data.spot.mid))
-            
+            for idx, r_bid in enumerate(r_asks):
+                q_asks.append(r_bid - (1 / self.data.futures.days_to_exp[idx] * 360) * np.log(self.data.futures.bids[idx] / self.data.spot.mid))
+
             return q_bids, q_asks
                               
                               
-        def calc_single_implied_vol(option_price, S, K, r, q, T, sigma, option_valuation):
+        def calc_single_implied_vol(option_price, S, K, r, q, T, sigma, option_valuation, method):
             '''
             This function calculates and returns the implied volatility of a European option using Newton-Raphson
             '''
+            if np.isnan(option_price):
+                return np.nan
+            
             def mse(option_price, S, K, r, q, T, sigma):
                 return (option_price - option_valuation(S, K, r, q, T, sigma))**2
             
-            f = partial(mse, option_price, S, K, r, q, T)
-            imp_vol = optimize.newton(mse, sigma)
+            f = partial(mse, option_price, S, K, r, q, T/360)
+            
+            if method == 'secant':
+                imp_vol, res = optimize.newton(f, sigma, full_output = True, disp=False)
+                if res.converged == False:
+                    return np.nan
+            elif method == 'newton raphson':
+                imp_vol = optimize.newton(f, sigma, disp=False)
+            elif method == 'halley':
+                imp_vol = optimize.newton(f, sigma)
+                
             return imp_vol
             
         
@@ -114,29 +130,21 @@ class implied_vol_surface:
         imp_vol_put_bids = []                      
         imp_vol_put_asks = []                 
         spot = self.data.spot.mid
-                              
+        i = 0
         for idx, maturity_days in enumerate(self.data.calls.days_to_exp):
             # initialise a random number to initialise optimisation
-            imp_vol_call_bid = 0.1
-            imp_vol_call_ask = 0.1
-            imp_vol_put_bid = 0.1                    
-            imp_vol_put_ask = 0.1 
-            strikes = list(compress(self.data.calls.strikes, [maturity_days == x for x in self.data.calls.days_to_exp]))
-            call_price_bids = list(compress(self.data.calls.bids, [maturity_days == x for x in self.data.calls.days_to_exp]))
-            call_price_asks = list(compress(self.data.calls.asks, [maturity_days == x for x in self.data.calls.days_to_exp]))
-            put_price_bids = list(compress(self.data.puts.bids, [maturity_days == x for x in self.data.calls.days_to_exp]))
-            put_price_asks = list(compress(self.data.puts.asks, [maturity_days == x for x in self.data.calls.days_to_exp]))
-            for strike, call_bid, call_ask, put_bid, put_ask in zip(strikes, call_price_bids, call_price_asks, put_price_bids, put_price_asks):
-                imp_vol_call_bid = calc_single_implied_vol(spot, strike, r_bids[idx], imp_q_bids[idx], maturity_days, imp_vol_call_bid, self.bs_call)
-                imp_vol_call_ask = calc_single_implied_vol(spot, strike, r_asks[idx], imp_q_asks[idx], maturity_days, imp_vol_call_ask, self.bs_call)
-                imp_vol_put_bid = calc_single_implied_vol(spot, strike, r_bids[idx], imp_q_bids[idx], maturity_days, imp_vol_put_bid, self.bs_put)
-                imp_vol_put_ask = calc_single_implied_vol(spot, strike, r_asks[idx], imp_q_asks[idx], maturity_days, imp_vol_put_ask, self.bs_put)
-                imp_vol_call_bids.append(imp_vol_call_bid)
-                imp_vol_call_asks.append(imp_vol_call_ask)
-                imp_vol_put_bids.append(imp_vol_put_bid)
-                imp_vol_put_asks.append(imp_vol_put_ask)
-        
-        self.imp_vol_call_bids = imp_vol_call_bids
-        self.imp_vol_call_asks = imp_vol_call_asks
-        self.imp_vol_put_bids = imp_vol_put_bids
-        self.imp_vol_put_asks = imp_vol_put_asks
+            for strike in self.data.calls.strikes:
+                imp_vol_call_bid = imp_vol_call_ask = imp_vol_put_bid = imp_vol_put_ask = 0.21
+                
+                imp_vol_call_bid = calc_single_implied_vol(self.data.calls.bids[i], spot, strike, r_bids[idx], imp_q_asks[idx], maturity_days, imp_vol_call_bid, self.bs_call, method)
+                imp_vol_call_ask = calc_single_implied_vol(self.data.calls.asks[i], spot, strike, r_asks[idx], imp_q_bids[idx], maturity_days, imp_vol_call_ask, self.bs_call, method)
+                imp_vol_put_bid = calc_single_implied_vol(self.data.puts.bids[i], spot, strike, r_asks[idx], imp_q_bids[idx], maturity_days, imp_vol_put_bid, self.bs_put, method)
+                imp_vol_put_ask = calc_single_implied_vol(self.data.puts.asks[i], spot, strike, r_bids[idx], imp_q_asks[idx], maturity_days, imp_vol_put_ask, self.bs_put, method)
+                self.imp_vol_call_bids.append(imp_vol_call_bid)
+                self.imp_vol_call_asks.append(imp_vol_call_ask)
+                self.imp_vol_put_bids.append(imp_vol_put_bid)
+                self.imp_vol_put_asks.append(imp_vol_put_ask)
+                self.days_to_exp.append(maturity_days)
+                self.strikes.append(strike)
+                
+                i += 1
