@@ -18,8 +18,8 @@ class raw_snapshot:
         self.ticker = ticker
         self.date = date
         self.spot = self.Spot(ticker, date)
-        self.us_rates = self.US_rates(ticker, date)
-        self.fx_rates = self.FX_rates(ticker, date, self.us_rates)
+        self.us_rates = self.US_rates(ticker, date) # note that rates are in percentages (i.e. 5.0 for 5%), need to divided by 100 for calculations
+        self.fx_rates = self.FX_rates(ticker, date, self.us_rates) # note that implied rates are in percentages
         self.futures = self.Futures(ticker, date, self.calc_maturities(ticker, date))
         self.maturity_dates = self.futures.maturity_dates
         self.calls = self.Calls(ticker, date, self.maturity_dates, self.spot)
@@ -79,7 +79,7 @@ class raw_snapshot:
                         'SHSN300 Index': 'IFB',
                         'CSI1000 Index': 'IFD',
                         'TWSE Index': 'FT',
-                        'KOSPI Index': 'KM',
+                        'KOSPI2 Index': 'KM',
                         'NIFTY Index': 'JGS',
                         'SPX Index': 'ES'
                        }
@@ -119,7 +119,7 @@ class raw_snapshot:
                                 'SHSN300 Index': 'IFB',
                                 'CSI1000 Index': 'IFD',
                                 'TWSE Index': 'FT',
-                                'KOSPI Index': 'KM',
+                                'KOSPI2 Index': 'KM',
                                 'NIFTY Index': 'JGS',
                                 'SPX Index': 'ES'
                                }
@@ -174,18 +174,29 @@ class raw_snapshot:
 #----------------------------------------------------------------------------------------------
     class FX_rates:
         def __init__(self, ticker, date, us_rates):
-            self.date = date
-            self.currency = None
-            self.tickers = self.map_local_rates(ticker)
-            self.spot_bid, self.spot_ask = self.extract_spot_rate()
-            self.days_to_exp = [2, 3, 7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 334, 365, 456, 548, 640, 730]
-            self.bids = []
-            self.asks = []
-            self.implied_yield_bids = []
-            self.implied_yield_asks = []
-            self.extract_fx_rates()
-            self.calc_implied_rate(us_rates)
-            
+            if ticker != 'SPX Index':
+                self.date = date
+                self.currency = None
+                self.tickers = self.map_local_rates(ticker)
+                self.spot_bid, self.spot_ask = self.extract_spot_rate(ticker)
+                self.days_to_exp = [2, 3, 7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 334, 365, 456, 548, 640, 730]
+                self.bids = []
+                self.asks = []
+                self.implied_yield_bids = []
+                self.implied_yield_asks = []
+                self.extract_fx_rates()
+                self.calc_implied_rate(us_rates)
+            else:
+                self.date = date
+                self.currency = 'USD'
+                self.tickers = self.map_local_rates(ticker)
+                self.spot_bid = self.spot_ask = 1
+                self.days_to_exp = [2, 3, 7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 334, 365, 456, 548, 640, 730]
+                self.bids = us_rates.bids
+                self.asks = us_rates.asks
+                self.implied_yield_bids = us_rates.bids
+                self.implied_yield_asks = us_rates.asks
+                
         def map_local_rates(self, ticker):
             index_fx_map = {'HSI Index':'HKD',
                             'HSCEI Index':'HKD',
@@ -193,7 +204,7 @@ class raw_snapshot:
                             'SHSN300 Index': 'CNH',
                             'CSI1000 Index': 'CNH',
                             'TWSE Index': 'NTN',
-                            'KOSPI Index': 'KWN',
+                            'KOSPI2 Index': 'KWN',
                             'NIFTY Index': 'IRN',
                             'SPX Index': 'USD'
                            }
@@ -209,8 +220,18 @@ class raw_snapshot:
                 else:
                     self.asks.append(v)
                     
-        def extract_spot_rate(self):
-            df = blp.bdh(tickers = 'USD' + self.currency + ' BGN Curncy', flds = ['PX_BID', 'PX_ASK'], start_date = self.date, end_date = self.date)
+        def extract_spot_rate(self, ticker):
+            index_spot_map = {'HSI Index':'HKD',
+                            'HSCEI Index':'HKD',
+                            'SSE50 Index': 'CNH',
+                            'SHSN300 Index': 'CNH',
+                            'CSI1000 Index': 'CNH',
+                            'TWSE Index': 'TWD',
+                            'KOSPI2 Index': 'KRW',
+                            'NIFTY Index': 'INR',
+                           }
+            spot_ticker = index_spot_map[ticker]
+            df = blp.bdh(tickers = 'USD' + spot_ticker + ' BGN Curncy', flds = ['PX_BID', 'PX_ASK'], start_date = self.date, end_date = self.date)
             return df.values.flatten()[0], df.values.flatten()[1]
             
         def calc_implied_rate(self, us_rates):
@@ -233,7 +254,7 @@ class raw_snapshot:
     class Calls:
         def __init__(self, ticker, date, maturity_dates, spot):
             self.date = date
-            self.strike_range = 0.1
+            self.strike_range = 0.25
             self.strikes = self.calc_strikes(ticker, spot)
             self.maturity_dates = maturity_dates
             self.tickers = []
@@ -250,7 +271,7 @@ class raw_snapshot:
                                 'SHSN300 Index': 50,
                                 'CSI1000 Index': 100,
                                 'TWSE Index': 100,
-                                'KOSPI Index': 2.5,
+                                'KOSPI2 Index': 2.5,
                                 'NIFTY Index': 50,
                                 'SPX Index': 5
                                }
@@ -292,7 +313,7 @@ class raw_snapshot:
     class Puts:
         def __init__(self, ticker, date, maturity_dates, spot):
             self.date = date
-            self.strike_range = 0.1
+            self.strike_range = 0.25
             self.strikes = self.calc_strikes(ticker, spot)
             self.maturity_dates = maturity_dates
             self.tickers = []
@@ -309,7 +330,7 @@ class raw_snapshot:
                                 'SHSN300 Index': 50,
                                 'CSI1000 Index': 100,
                                 'TWSE Index': 100,
-                                'KOSPI Index': 2.5,
+                                'KOSPI2 Index': 2.5,
                                 'NIFTY Index': 50,
                                 'SPX Index': 5
                                }
