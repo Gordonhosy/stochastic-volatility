@@ -29,6 +29,12 @@ class black_scholes:
         Helper function to return the normal cdf
         '''
         return stats.norm.cdf(x, 0.0, 1.0)
+    
+    def normal_prime(self, x):
+        '''
+        Helper function to approximate the normal inverse
+        '''
+        return (np.exp(-(x**2)/2)) / (np.sqrt(2 * np.pi))
         
     def bs_call(self, S, K, r, q, T, sigma):
         '''
@@ -51,7 +57,15 @@ class black_scholes:
         Helper funtion to calculate option vega
         '''
         d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
-        return S * np.sqrt(T) * (np.exp(-(d1**2)/2)) / (np.sqrt(2 * np.pi))
+        return S * np.sqrt(T) * self.normal_prime(d1)
+    
+    def bs_volga(self, S, K, r, q, T, sigma):
+        '''
+        Helper function to calculate option volga
+        '''
+        d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        return np.exp(-q * T) * np.sqrt(T) * self.normal_prime(d1) * (d1 * d2 / sigma)
     
     
     def root_finding(self, method):
@@ -132,8 +146,18 @@ class black_scholes:
                 imp_vol, res = optimize.newton(f, sigma, fprime = fp, full_output = True, disp = False)
                 if res.converged == False:
                     return np.nan
+                
             elif method == 'halley':
-                imp_vol = optimize.newton(f, sigma)
+                def f_prime(option_price, S, K, r, q, T, sigma):
+                    return 2 * (option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_vega(S, K, r, q, T, sigma)
+                def f_prime2(option_price, S, K, r, q, T, sigma):
+                    return 2 * ((option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_volga(S, K, r, q, T, sigma)\
+                               + self.bs_vega(S, K, r, q, T, sigma) ** 2)
+                fp = partial(f_prime, option_price, S, K, r, q, T/360)
+                fp2 = partial(f_prime2, option_price, S, K, r, q, T/360)
+                imp_vol, res = optimize.newton(f, sigma, fprime = fp, fprime2 = fp2, full_output = True, disp = False)
+                if res.converged == False:
+                    return np.nan
                 
             return imp_vol
             
@@ -169,6 +193,13 @@ class black_scholes:
                 self.strikes.append(strike)
                 
                 i += 1               
+                
+
+    def calc_convergence(self):
+        '''
+        Function to calculate the number of convergence
+        '''
+        return len([x for x in self.imp_vol_call_asks + self.imp_vol_call_bids + self.imp_vol_put_asks + self.imp_vol_put_bids if not np.isnan(x)])
     
     
 # Visualisations
