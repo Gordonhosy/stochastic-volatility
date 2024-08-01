@@ -6,6 +6,7 @@ from itertools import compress
 import plotly.graph_objects as go
 
 
+
 class black_scholes:
     def __init__(self, snapshot):
         '''
@@ -13,6 +14,7 @@ class black_scholes:
             1. Different methods to calculate implied volatility
             2. Plotting functions
         '''
+        self.name = 'bs'
         self.data = snapshot
         self.imp_vol_call_bids = []
         self.imp_vol_call_asks = []
@@ -22,7 +24,15 @@ class black_scholes:
         self.imp_vol_put_mids = []
         self.days_to_exp = []
         self.strikes = []
-
+        self.r = []
+        self.q = []
+        self.adjust_rates()
+        self.calc_static()
+        self.calc_r_q()
+        
+        self.obs_exps = []
+        self.obs_strikes = []
+        self.obs_prices = []
         
     def normal(self, x):
         '''
@@ -35,10 +45,16 @@ class black_scholes:
         Helper function to approximate the normal inverse
         '''
         return (np.exp(-(x**2)/2)) / (np.sqrt(2 * np.pi))
+    
+    def d1(self, S, K, r, q, sigma, T):
+        '''
+        Helper function to calculate d1
+        '''
+        return (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
         
     def bs_call(self, S, K, r, q, T, sigma):
         '''
-        Helper funtion to calculate Black-Scholes European call
+        Helper function to calculate Black-Scholes European call
         '''
         d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
@@ -46,7 +62,7 @@ class black_scholes:
     
     def bs_put(self, S, K, r, q, T, sigma):
         '''
-        Helper funtion to calculate Black-Scholes European put
+        Helper function to calculate Black-Scholes European put
         '''
         d1 = (np.log(S / K) + (r - q + (sigma**2) / 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
@@ -67,15 +83,7 @@ class black_scholes:
         d2 = d1 - sigma * np.sqrt(T)
         return np.exp(-q * T) * np.sqrt(T) * self.normal_prime(d1) * (d1 * d2 / sigma)
     
-    
-    def root_finding(self, method):
-        '''
-        This function uses root-finding methods to get the implied vol given all other parameters
-        This assumes the options have the same expiry with futures
-        The function is seperated into two steps:
-            1. Calculate the implied dividend yield + repo rate (the implied q) from future contracts for each expiry
-            2. Use a root-finding method to find the implied volatility that minimises squared error between market price and BS option
-        '''
+    def calc_r_q(self):
         def interpolate_r(data):
             r_bids = []
             r_asks = []
@@ -93,6 +101,10 @@ class black_scholes:
                             pass
                         else:
                             break
+                    
+                    if T < min(self.data.fx_rates.days_to_exp): # linear extrapolate for T smaller than all available rates
+                        idx += 1
+
                     r_bid = ((self.data.fx_rates.implied_yield_bids[idx] - self.data.fx_rates.implied_yield_bids[idx - 1]) / \
                     (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
                     * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.implied_yield_bids[idx - 1]
@@ -100,15 +112,16 @@ class black_scholes:
                     (self.data.fx_rates.days_to_exp[idx] - self.data.fx_rates.days_to_exp[idx - 1])) \
                     * (T - self.data.fx_rates.days_to_exp[idx - 1]) + self.data.fx_rates.implied_yield_asks[idx - 1]
                 
-                r_bids.append(r_bid/100)
-                r_asks.append(r_ask/100)
+                # transform annual rate to continuous rate
+                r_bids.append(np.log(1 + r_bid / 100))
+                r_asks.append(np.log(1 + r_ask / 100))
 
             return r_bids, r_asks
         
         
         def calc_implied_q(data, r_bids, r_asks):
             '''
-            This function calculates the implied q from future contracts for each maturities
+            This function calculates the continuous implied q from future contracts for each maturities
             '''
             q_bids = []
             q_asks = []
@@ -122,51 +135,25 @@ class black_scholes:
             return q_bids, q_asks
                               
                               
-        def calc_single_implied_vol(option_price, S, K, r, q, T, sigma, option_valuation, method):
-            '''
-            This function calculates and returns the implied volatility of a European option using Newton-Raphson
-            '''
-            if np.isnan(option_price):
-                return np.nan
-            
-            def mse(option_price, S, K, r, q, T, sigma):
-                return (option_valuation(S, K, r, q, T, sigma) - option_price)**2
-            
-            f = partial(mse, option_price, S, K, r, q, T/360)
-            
-            if method == 'secant':
-                imp_vol, res = optimize.newton(f, sigma, full_output = True, disp = False, tol=1.48e-15, maxiter=500)
-                if res.converged == False:
-                    return np.nan
-                
-            elif method == 'newton':
-                def f_prime(option_price, S, K, r, q, T, sigma):
-                    return 2 * (option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_vega(S, K, r, q, T, sigma)
-                fp = partial(f_prime, option_price, S, K, r, q, T/360)
-                imp_vol, res = optimize.newton(f, sigma, fprime = fp, full_output = True, disp = False)
-                if res.converged == False:
-                    return np.nan
-                
-            elif method == 'halley':
-                def f_prime(option_price, S, K, r, q, T, sigma):
-                    return 2 * (option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_vega(S, K, r, q, T, sigma)
-                def f_prime2(option_price, S, K, r, q, T, sigma):
-                    return 2 * ((option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_volga(S, K, r, q, T, sigma)\
-                               + self.bs_vega(S, K, r, q, T, sigma) ** 2)
-                fp = partial(f_prime, option_price, S, K, r, q, T/360)
-                fp2 = partial(f_prime2, option_price, S, K, r, q, T/360)
-                imp_vol, res = optimize.newton(f, sigma, fprime = fp, fprime2 = fp2, full_output = True, disp = False)
-                if res.converged == False:
-                    return np.nan
-                
-            return imp_vol
-            
         
-        # Step one: find the implied q
+               
         r_bids, r_asks = interpolate_r(self.data)
         imp_q_bids, imp_q_asks = calc_implied_q(self.data, r_bids, r_asks)
-        r_mids = [(x + y)/2 for x, y in zip(r_bids, r_asks)]
-        imp_q_mids = [(x + y)/2 for x, y in zip(imp_q_bids, imp_q_asks)]
+        self.r = [(x + y)/2 for x, y in zip(r_bids, r_asks)]
+        self.q = [(x + y)/2 for x, y in zip(imp_q_bids, imp_q_asks)]
+        
+    
+    def root_finding(self, method):
+        '''
+        This function uses root-finding methods to get the implied vol given all other parameters
+        This assumes the options have the same expiry with futures
+        The function is seperated into two steps:
+            1. Calculate the implied dividend yield + repo rate (the implied q) from future contracts for each expiry
+            2. Use a root-finding method to find the implied volatility that minimises squared error between market price and BS option
+        '''
+        # Step one: find the implied q
+        r_mids = self.r
+        imp_q_mids = self.q
         
         # Step two: Use root-finding methdods to calculate the implied vol
         spot = self.data.spot.mid
@@ -174,14 +161,14 @@ class black_scholes:
         for idx, maturity_days in enumerate(self.data.calls.days_to_exp):
             for strike in self.data.calls.strikes:
                 # initialise a random number to initialise optimisation
-                imp_vol_call_bid = imp_vol_call_ask = imp_vol_put_bid = imp_vol_put_ask = imp_vol_call_mid = imp_vol_put_mid = 0.21
+                imp_vol_call_bid = imp_vol_call_ask = imp_vol_put_bid = imp_vol_put_ask = imp_vol_call_mid = imp_vol_put_mid = 0.2
                 
-                imp_vol_call_bid = calc_single_implied_vol(self.data.calls.bids[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_bid, self.bs_call, method)
-                imp_vol_call_ask = calc_single_implied_vol(self.data.calls.asks[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_ask, self.bs_call, method)
-                imp_vol_put_bid = calc_single_implied_vol(self.data.puts.bids[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_bid, self.bs_put, method)
-                imp_vol_put_ask = calc_single_implied_vol(self.data.puts.asks[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_ask, self.bs_put, method)
-                imp_vol_call_mid = calc_single_implied_vol((self.data.calls.bids[i] + self.data.calls.asks[i])/2, spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_mid, self.bs_call, method)
-                imp_vol_put_mid = calc_single_implied_vol((self.data.puts.bids[i] + self.data.puts.asks[i])/2, spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_mid, self.bs_put, method)
+                imp_vol_call_bid = self.calc_single_implied_vol(self.data.calls.bids[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_bid, self.bs_call, method)
+                imp_vol_call_ask = self.calc_single_implied_vol(self.data.calls.asks[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_ask, self.bs_call, method)
+                imp_vol_put_bid = self.calc_single_implied_vol(self.data.puts.bids[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_bid, self.bs_put, method)
+                imp_vol_put_ask = self.calc_single_implied_vol(self.data.puts.asks[i], spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_ask, self.bs_put, method)
+                imp_vol_call_mid = self.calc_single_implied_vol((self.data.calls.bids[i] + self.data.calls.asks[i])/2, spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_call_mid, self.bs_call, method)
+                imp_vol_put_mid = self.calc_single_implied_vol((self.data.puts.bids[i] + self.data.puts.asks[i])/2, spot, strike, r_mids[idx], imp_q_mids[idx], maturity_days, imp_vol_put_mid, self.bs_put, method)
                 
                 self.imp_vol_call_bids.append(imp_vol_call_bid)
                 self.imp_vol_call_asks.append(imp_vol_call_ask)
@@ -189,11 +176,48 @@ class black_scholes:
                 self.imp_vol_put_asks.append(imp_vol_put_ask)
                 self.imp_vol_call_mids.append(imp_vol_call_mid)
                 self.imp_vol_put_mids.append(imp_vol_put_mid)
-                self.days_to_exp.append(maturity_days)
-                self.strikes.append(strike)
                 
-                i += 1               
+                i += 1      
                 
+                
+    def calc_single_implied_vol(self, option_price, S, K, r, q, T, sigma, option_valuation, method):
+        '''
+        This function calculates and returns the implied volatility of a European option using Newton-Raphson
+        '''
+        if np.isnan(option_price):
+            return np.nan
+
+        def mse(option_price, S, K, r, q, T, sigma):
+            return (option_valuation(S, K, r, q, T, sigma) - option_price)**2
+
+        f = partial(mse, option_price, S, K, r, q, T/360)
+
+        if method == 'secant':
+            imp_vol, res = optimize.newton(f, sigma, full_output = True, disp = False, tol=1.48e-15, maxiter=500)
+            if res.converged == False:
+                return np.nan
+
+        elif method == 'newton':
+            def f_prime(option_price, S, K, r, q, T, sigma):
+                return 2 * (option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_vega(S, K, r, q, T, sigma)
+            fp = partial(f_prime, option_price, S, K, r, q, T/360)
+            imp_vol, res = optimize.newton(f, sigma, fprime = fp, full_output = True, disp = False)
+            if res.converged == False:
+                return np.nan
+
+        elif method == 'halley':
+            def f_prime(option_price, S, K, r, q, T, sigma):
+                return 2 * (option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_vega(S, K, r, q, T, sigma)
+            def f_prime2(option_price, S, K, r, q, T, sigma):
+                return 2 * ((option_valuation(S, K, r, q, T, sigma) - option_price) * self.bs_volga(S, K, r, q, T, sigma)\
+                           + self.bs_vega(S, K, r, q, T, sigma) ** 2)
+            fp = partial(f_prime, option_price, S, K, r, q, T/360)
+            fp2 = partial(f_prime2, option_price, S, K, r, q, T/360)
+            imp_vol, res = optimize.newton(f, sigma, fprime = fp, fprime2 = fp2, full_output = True, disp = False)
+            if res.converged == False:
+                return np.nan
+
+        return imp_vol
 
     def calc_convergence(self):
         '''
@@ -201,6 +225,47 @@ class black_scholes:
         '''
         return len([x for x in self.imp_vol_call_asks + self.imp_vol_call_bids + self.imp_vol_put_asks + self.imp_vol_put_bids if not np.isnan(x)])
     
+    
+    def calc_static(self):
+        '''
+        Helper function to created ordered strikes and expiries
+        '''
+        for T in self.data.calls.days_to_exp:
+            for K in self.data.calls.strikes:
+                self.days_to_exp.append(T)
+                self.strikes.append(K)
+    
+    def adjust_rates(self):
+        '''
+        Some currencies need adjustments since data is not available for all tenors
+        '''
+        if self.data.ticker in ['HSI Index', 'HSCEI Index']:
+            self.data.fx_rates.days_to_exp = self.data.us_rates.days_to_exp \
+            = [1, 2, 3, 7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 334, 365, 456, 548, 640, 730]
+            self.data.fx_rates.implied_yield_bids = []
+            self.data.fx_rates.implied_yield_asks = []
+            self.data.fx_rates.calc_implied_rate(self.data.us_rates)
+        # CNH no 15m, 21m
+        elif self.data.ticker in ['SSE50 Index', 'SHSN300 Index', 'CSI1000 Index']:
+            self.data.fx_rates.days_to_exp = self.data.us_rates.days_to_exp \
+            = [1, 2, 3, 7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 334, 365, 548, 730]
+            self.data.fx_rates.implied_yield_bids = []
+            self.data.fx_rates.implied_yield_asks = []
+            self.data.fx_rates.calc_implied_rate(self.data.us_rates)
+        # NTN no ON, TN, SN, 11m, 15m, 18m, 21m
+        elif self.data.ticker in ['TWSE Index']:
+            self.data.fx_rates.days_to_exp = self.data.us_rates.days_to_exp \
+            = [7, 14, 21, 30, 61, 91, 122, 153, 183, 214, 244, 275, 306, 365, 730]
+            self.data.fx_rates.implied_yield_bids = []
+            self.data.fx_rates.implied_yield_asks = []
+            self.data.fx_rates.calc_implied_rate(self.data.us_rates)
+        # IRN no ON, TN, SN, 2w, 3w, 4m, 5m, 7m, 8m, 10m, 11m, 15m, 18m, 21m
+        elif self.data.ticker in ['NIFTY Index']:
+            self.data.fx_rates.days_to_exp = self.data.us_rates.days_to_exp \
+            = [7, 30, 61, 91, 183, 275, 365, 730]
+            self.data.fx_rates.implied_yield_bids = []
+            self.data.fx_rates.implied_yield_asks = []
+            self.data.fx_rates.calc_implied_rate(self.data.us_rates)
     
 # Visualisations
 # --------------------------------------------------------------------------------------------------------------------
@@ -369,3 +434,4 @@ class black_scholes:
                             index = sorted(list(set(self.days_to_exp))),
                             columns = sorted(list(set(self.strikes)))
                            )
+    
