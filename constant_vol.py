@@ -435,3 +435,22 @@ class black_scholes:
                             columns = sorted(list(set(self.strikes)))
                            )
     
+    def mse_performance(self):
+        '''
+        Calculate the mse with average implied vol
+        '''
+        imp_vol_avg = np.nanmean(self.imp_vol_call_mids)
+        obs_idx = np.argwhere(~np.isnan(self.imp_vol_call_bids)).flatten()
+        self.obs_exps = np.array(self.days_to_exp)[[obs_idx]].flatten()
+        self.obs_strikes = np.array(self.strikes)[[obs_idx]].flatten()
+        self.obs_prices = np.array(self.data.calls.bids)[[obs_idx]].flatten()
+        self.obs_imp_vol = np.array(self.imp_vol_call_bids)[[obs_idx]].flatten()
+        mse = 0
+        
+        for exp, strike, mkt_price in zip(self.obs_exps, self.obs_strikes, self.obs_prices):
+            idx = sorted(list(set(self.obs_exps))).index(exp)
+            mse += (mkt_price - self.bs_call(self.data.spot.mid, strike, self.r[idx], self.q[idx], exp/360, imp_vol_avg))**2
+            
+        return mse/len(self.obs_prices)
+    
+    

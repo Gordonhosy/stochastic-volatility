@@ -7,12 +7,14 @@ from functools import partial
 from itertools import compress
 import plotly.graph_objects as go
 import cvxopt as opt
-from cvxopt import matrix, spmatrix, sparse
+from cvxopt import matrix, spmatrix, sparse, solvers
+solvers.options['show_progress'] = False 
 from cvxopt.solvers import qp, options
 from cvxopt import blas
 from scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import Rbf
 import math
+
 
 
 class local_volatility(black_scholes):
@@ -1109,3 +1111,25 @@ class local_volatility(black_scholes):
     
 
         
+    def mse_performance(self):
+        '''
+        Calculate the mse against smoothed call surface
+        '''
+        mse = 0
+        for exp, strike, mkt_price in zip(self.obs_exps, self.obs_strikes, self.obs_prices):
+            
+            mse += (mkt_price - self.c(strike, exp))**2
+            
+        return mse/len(self.obs_prices)
+    
+    
+    def mse_performance_fdm(self):
+        '''
+        Calculate the mse against FDM prices
+        '''
+        mse = 0
+        for exp, strike, mkt_price in zip(self.obs_exps, self.obs_strikes, self.obs_prices):
+            
+            mse += (mkt_price - self.fdm_call(strike, exp))**2
+            
+        return mse/len(self.obs_prices)
